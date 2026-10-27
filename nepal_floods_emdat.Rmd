@@ -1,0 +1,276 @@
+---
+title: "When the Monsoon Turns Deadly: Nepal's Flood Disasters, 1980-2026"
+author: "Dipesh Shrestha s4197718"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+  pdf_document:
+    toc: true
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(lubridate)
+library(plotly)
+library(crosstalk)
+library(readxl)
+library(knitr)
+
+# Colour-blind safe palette (Okabe & Ito)
+okabe <- c("#0072B2", "#E69F00", "#009E73", "#D55E00",
+           "#CC79A7", "#56B4E9", "#F0E442", "#000000")
+```
+
+# The Story
+
+If you’ve spent any real time in Nepal, you know the monsoon is more than just a season—it’s the pulse of the country. It’s the water that keeps our farms alive and our rivers full. But lately, that pulse has felt off. The rains feel more erratic, more violent. I started digging into the flood data because I noticed a disconnect between the "natural disaster" headlines we see every year and what the long-term trends actually show. I wanted to know if the monsoon is truly becoming more lethal, or if we've simply become better at documenting the tragedy.
+
+I’m not trying to build a complex climate model here. I just wanted to look at the recorded history and ask: when are these floods hitting, how much damage are they actually doing, and has the scale really shifted over the last forty years? By stripping away the noise of the headlines, I hope to find the real footprint these disasters have left on our land.
+
+```{r config}
+data_dir      <- "."
+emdat_file    <- file.path(data_dir, "public_emdat_custom_request_2026-10-20_5243fc45-c192-47c9-a0e7-ab98cb654ca2.xlsx") 
+first_year    <- 1980                                     
+```
+
+# Data and Preparation
+
+I turned to the EM-DAT international disaster database for the numbers, but as anyone who has worked with open data knows, raw datasets are rarely a perfect reflection of reality. I spent a good deal of time cleaning the data first—standardizing column names and stripping away the noise—mostly just to make sure my code wouldn't break.
+
+I made a conscious decision to focus exclusively on "Flood" events. While landslides and glacial lake outbursts are just as devastating in Nepal, I wanted to isolate the specific impact of the monsoon rains to keep the story clear. I also had to decide where to "start the clock"; since records from the early 80s are often patchy or unreliable, I set **`r first_year`** as my baseline to keep the trends honest.
+
+The hardest part was dealing with the gaps. In many cases, the number of deaths or affected people simply wasn't reported. I was tempted to estimate these figures, but I decided to leave them as `NA`. To me, those gaps are actually part of the story—they represent the chaos of a disaster zone where counting the cost is often the hardest task of all.
+
+```{r load-data}
+tidy_names <- function(df) {
+  names(df) <- names(df) |> str_to_lower() |>
+    str_replace_all("[^a-z0-9]+", "_") |> str_remove_all("^_|_$")
+  df
+}
+
+em <- read_excel(emdat_file, sheet = 1) |> tidy_names()
+
+floods <- em |>
+  filter(str_detect(str_to_lower(country), "nepal"),
+         disaster_type == "Flood",
+         start_year >= first_year) |>
+  transmute(
+    year     = as.integer(start_year),
+    month    = as.integer(start_month),
+    type     = coalesce(as.character(disaster_subtype), "Flood (unspecified)"),
+    deaths   = as.numeric(total_deaths),
+    affected = as.numeric(total_affected),
+    location = location
+  ) |>
+  arrange(year, month)
+
+types <- sort(unique(floods$type))
+pal   <- setNames(okabe[seq_along(types)], types)
+n_ev  <- nrow(floods)
+```
+
+In the end, I’m looking at **`r n_ev`** flood events. We only have death tolls for **`r sum(!is.na(floods$deaths))`** of those, but the gaps in reporting are a reminder that when a disaster hits, the actual human cost is often the hardest thing to track.
+
+```{r sources-note, echo=FALSE}
+src <- paste0("*Source: EM-DAT, CRED / UCLouvain (2026). Nepal floods, ",
+              first_year, "-", max(floods$year), ".*")
+```
+
+# Visualisation 1: The Rhythm of the Monsoon
+
+```{r vis1}
+eras <- list("All years" = c(first_year, 2100),
+             "1980-1999" = c(1980, 1999),
+             "2000 onwards" = c(2000, 2100))
+
+fig <- plot_ly()
+for (e in names(eras)) {
+  for (t in types) {
+    d <- floods |>
+      filter(!is.na(month), type == t,
+             year >= eras[[e]][1], year <= eras[[e]][2]) |>
+      count(month) |>
+      complete(month = 1:12, fill = list(n = 0))
+    fig <- fig |> add_bars(
+      x = month.abb[d$month], y = d$n, name = t,
+      marker = list(color = unname(pal[t])),
+      visible = (e == "All years"), legendgroup = t,
+      hovertemplate = paste0(t, "<br>%{x}: %{y} events<extra></extra>")
+    )
+  }
+}
+
+n_tr <- length(eras) * length(types)
+buttons <- lapply(seq_along(eras), function(i) {
+  vis <- rep(FALSE, n_tr)
+  vis[((i - 1) * length(types) + 1):(i * length(types))] <- TRUE
+  list(method = "update", args = list(list(visible = vis)), label = names(eras)[i])
+})
+
+fig |> layout(
+  barmode = "stack",
+  title = "Month each recorded flood began",
+  xaxis = list(title = "Month", categoryorder = "array", categoryarray = month.abb),
+  yaxis = list(title = "Number of flood events"),
+  margin = list(t = 100),
+  updatemenus = list(list(type = "buttons", direction = "right",
+                          x = 0, y = 1.35, buttons = buttons))
+)
+```
+
+`r src`
+
+This chart confirms what we feel on the ground—the monsoon is the heartbeat of our disaster risk. With **`r round(100 * mean(floods$month %in% 6:9, na.rm = TRUE))`%** of floods beginning between June and September, the timing is predictable. However, comparing the two eras reveals a worrying trend: the peak hasn't shifted, but the frequency of these events has.
+
+# Visualisation 2: Decades of Danger
+
+```{r vis2}
+dec <- floods |>
+  mutate(decade = floor(year / 10) * 10,
+         label = ifelse(decade == 2020, "2020-2026", paste0(decade, "s")))
+
+dec_n <- dec |> count(label, decade, type)
+dec_d <- dec |> group_by(label, decade) |>
+  summarise(deaths = sum(deaths, na.rm = TRUE), .groups = "drop")
+lvls <- dec_d |> arrange(decade) |> pull(label)
+
+plot_ly() |>
+  add_bars(data = dec_n, x = ~label, y = ~n, color = ~type, colors = pal,
+           hovertemplate = "%{x}<br>%{y} events<extra></extra>") |>
+  add_trace(data = dec_d, x = ~label, y = ~deaths, type = "scatter",
+            mode = "lines+markers", name = "Total deaths", yaxis = "y2",
+            line = list(color = "#000000"), marker = list(color = "#000000"),
+            hovertemplate = "%{x}<br>%{y:,} deaths<extra></extra>") |>
+  layout(
+    barmode = "stack",
+    title = "Recorded flood events and deaths per decade",
+    xaxis = list(title = "Decade", categoryorder = "array", categoryarray = lvls),
+    yaxis = list(title = "Number of flood events"),
+    yaxis2 = list(title = "Reported deaths", overlaying = "y", side = "right"),
+    legend = list(orientation = "h", y = -0.25)
+  )
+```
+
+`r src`
+
+There's a real tension here between frequency and severity. While the number of flood events—the bars—has generally climbed over the years, the death toll—that black line—doesn't always follow the same path. It's a sobering reminder that in Nepal, tragedy isn't always about how often it rains, but about those rare, catastrophic seasons that can wipe out a decade of progress in a single week.
+
+# Visualisation 3: The Scale of Tragedy
+
+Each dot is one flood. Dot size shows people affected. **Drag a box around dots to select them.** The same events light up in Visualisation 4.
+
+```{r vis3-data}
+ev <- floods |>
+  filter(!is.na(deaths), deaths > 0) |>
+  mutate(
+    id    = row_number(),
+    msize = ifelse(is.na(affected), 8, 8 + 24 * sqrt(affected / max(affected, na.rm = TRUE))),
+    tip   = paste0(year, " (", type, ")<br>Deaths: ", format(deaths, big.mark = ","),
+                   "<br>People affected: ",
+                   ifelse(is.na(affected), "not reported", format(affected, big.mark = ","))),
+    affected_plot = ifelse(!is.na(affected) & affected > 0, affected, NA_real_)
+  )
+
+sd <- SharedData$new(ev, key = ~id)
+
+top3 <- ev |> slice_max(deaths, n = 3, with_ties = FALSE)
+notes <- pmap(top3, function(year, deaths, ...) {
+  list(x = year, y = log10(deaths), text = paste0(year, ": ", format(deaths, big.mark = ","), " deaths"),
+       showarrow = TRUE, arrowhead = 2, ax = -50, ay = -25, font = list(size = 11))
+})
+```
+
+```{r vis3}
+bscols(widths = 12, filter_select("type", "Flood type", sd, ~type))
+
+p3 <- plot_ly(sd, x = ~year, y = ~deaths, color = ~type, colors = pal,
+              type = "scatter", mode = "markers",
+              marker = list(size = ~msize, opacity = 0.75, line = list(width = 1, color = "white")),
+              text = ~tip, hoverinfo = "text") |>
+  layout(title = "Deaths per flood event (log scale)",
+         xaxis = list(title = "Year"),
+         yaxis = list(title = "Reported deaths (log scale)", type = "log"),
+         annotations = notes, dragmode = "select") |>
+  highlight(on = "plotly_selected", off = "plotly_deselect")
+p3
+```
+
+`r src`
+
+Using a log scale here allows us to see both the common floods and the extreme disasters on a single chart. The most striking realization is that the deadliest floods aren't necessarily the most frequent ones; they are 'black swan' events that completely defy the average.
+
+# Visualisation 4: Impact vs. Fatality
+
+```{r vis4}
+p4 <- plot_ly(sd, x = ~affected_plot, y = ~deaths, color = ~type, colors = pal,
+              type = "scatter", mode = "markers",
+              marker = list(size = 10, opacity = 0.75, line = list(width = 1, color = "white")),
+              text = ~tip, hoverinfo = "text") |>
+  layout(title = "Deaths against people affected (both log scales)",
+         xaxis = list(title = "People affected (log scale)", type = "log"),
+         yaxis = list(title = "Reported deaths (log scale)", type = "log"),
+         dragmode = "select") |>
+  highlight(on = "plotly_selected", off = "plotly_deselect")
+p4
+```
+
+`r src`
+
+There's a strange contradiction here: a flood that affects thousands of people doesn't always result in a high death toll, yet some events with very few 'affected' people are incredibly lethal. It suggests that *where* a flood hits and the *speed* of the water are often far more critical than the total area covered.
+
+# Visualisation 5: The Shifting Season
+
+```{r vis5}
+# Multivariate Heatmap: Year x Month x Deaths
+vis5_data <- floods |>
+  filter(!is.na(month)) |>
+  group_by(year, month) |>
+  summarise(total_deaths = sum(deaths, na.rm = TRUE), .groups = "drop") |>
+  complete(year = first_year:max(floods$year), month = 1:12, fill = list(total_deaths = 0))
+
+plot_ly(
+  data = vis5_data,
+  x = ~year,
+  y = ~month.abb[month],
+  z = ~total_deaths,
+  type = "heatmap",
+  colorscale = "Viridis",
+  hovertemplate = "Year: %{x}<br>Month: %{y}<br>Deaths: %{z}<extra></extra>"
+) |>
+  layout(
+    title = "Heatmap of Flood Fatalities: Time vs. Season",
+    xaxis = list(title = "Year"),
+    yaxis = list(title = "Month", categoryorder = "array", categoryarray = month.abb),
+    annotations = list(
+      text = "Darker colors indicate higher death tolls during that specific month/year",
+      showarrow = FALSE, xref = "paper", yref = "paper", x = 0, y = -0.2
+    )
+  )
+```
+
+`r src`
+
+This heatmap acts as a visual fingerprint of the monsoon's evolution. While the deepest concentrations of death historically cluster in the traditional June-to-September window, we're now seeing these 'outlier' flashes in other months. It's visual evidence that the rhythm is becoming erratic—the danger is no longer confined to a predictable window, making early warning and preparation far more challenging.
+
+# Limitations
+
+While this data provides a powerful bird's eye view, it has limitations:
+
+- **The Threshold Problem:** EM-DAT only records "significant" disasters. Thousands of smaller, local floods that devastate villages but don't hit international thresholds are missing.
+- **The Reporting Bias:** We have much better data for 2020 than we did for 1980. Some of the "increase" we see might simply be better bookkeeping.
+- **The Human Element:** These charts don't show deforestation or unplanned urban growth in floodplains—factors that turn a "weather event" into a "human disaster."
+
+# Acknowledgements
+
+Beyond the charts and the data points in this report are real people, real families, and real stories of loss. I want to acknowledge the people of Nepal—especially those in the most vulnerable river basins and mountain villages—who have endured these disasters. Their resilience in the face of unimaginable loss is the true story behind these numbers, and this work is dedicated to them.
+
+# References
+
+Centre for Research on the Epidemiology of Disasters. (2026). *EM-DAT: The international disaster database* [Data set, version 2026-10-12]. Université catholique de Louvain. <https://www.emdat.be>
